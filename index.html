@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Xバズ分析">
+<meta name="theme-color" content="#0a0a0f">
+<title>Xバズ分析ツール</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0;padding:0}
+body{background:#0a0a0f;color:#f0f0f5;font-family:'Hiragino Kaku Gothic ProN','BIZ UDGothic',sans-serif;max-width:480px;margin:0 auto;min-height:100vh}
+input,textarea,select{width:100%;padding:12px 14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:#f0f0f5;font-size:14px;outline:none;font-family:inherit;box-sizing:border-box}
+input::placeholder,textarea::placeholder{color:#3a3a4a}
+select{cursor:pointer;-webkit-appearance:none}
+select option{background:#1a1a28}
+textarea{resize:vertical}
+button{cursor:pointer;font-family:inherit;border:none}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.fade{animation:fadeIn 0.3s ease}
+::-webkit-scrollbar{width:3px}
+::-webkit-scrollbar-thumb{background:rgba(29,161,242,0.3);border-radius:2px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const STORAGE_KEY='buzz-x-v1';
+const CATEGORIES=['占い・スピリチュアル','恋愛','ライフスタイル','自己啓発','ビジネス','その他'];
+
+function loadPosts(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]')}catch{return[]}}
+function savePosts(p){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(p))}catch{}}
+
+let state={tab:'analyze',posts:loadPosts()};
+
+function scoreColor(s){return s>=80?'#1da1f2':s>=60?'#f77737':'#ff4566'}
+function scoreGrad(s){return s>=80?'linear-gradient(90deg,#0a66c2,#1da1f2)':s>=60?'linear-gradient(90deg,#e1306c,#f77737)':'linear-gradient(90deg,#ff4566,#ff8c42)'}
+
+function h(tag,attrs){
+  const el=document.createElement(tag);
+  const children=Array.from(arguments).slice(2).flat();
+  if(attrs)Object.entries(attrs).forEach(function(e){
+    const k=e[0],v=e[1];
+    if(k==='style'&&typeof v==='object')Object.assign(el.style,v);
+    else if(k.startsWith('on'))el.addEventListener(k.slice(2).toLowerCase(),v);
+    else el.setAttribute(k,v);
+  });
+  children.forEach(function(c){
+    if(c==null||c===false)return;
+    el.appendChild(typeof c==='string'?document.createTextNode(c):c);
+  });
+  return el;
+}
+
+function cardStyle(extra){return Object.assign({background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'16px',padding:'16px',marginBottom:'12px'},extra||{})}
+function lbl(text){return h('div',{style:{fontSize:'11px',color:'#555',letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'8px'}},text)}
+function fld(labelText,content){var d=h('div',{style:{marginBottom:'16px'}});d.appendChild(lbl(labelText));d.appendChild(content);return d}
+
+function copyText(text){
+  if(navigator.clipboard){navigator.clipboard.writeText(text).catch(function(){})}
+  var ta=document.createElement('textarea');
+  ta.value=text;ta.style.cssText='position:fixed;opacity:0;top:0;left:0';
+  document.body.appendChild(ta);ta.select();
+  try{document.execCommand('copy')}catch(e){}
+  document.body.removeChild(ta);
+}
+
+function makeCopyBtn(text){
+  var btn=h('button',{
+    style:{marginTop:'10px',width:'100%',padding:'13px',borderRadius:'10px',border:'none',background:'rgba(29,161,242,0.15)',color:'#1da1f2',fontSize:'14px',fontWeight:'700',transition:'all 0.2s'},
+    onclick:function(){
+      copyText(text);
+      btn.textContent='✓ コピー済み！このチャットに貼り付けて送信 →';
+      btn.style.background='rgba(29,161,242,0.08)';
+      btn.style.color='#5bb8f5';
+    }
+  },'📋 コピーする');
+  return btn;
+}
+
+function makePasteArea(placeholder,onSave){
+  var wrap=h('div',{style:{marginTop:'14px'}});
+  wrap.appendChild(lbl('Claudeの返答をここに貼り付け'));
+  var ta=h('textarea',{placeholder:placeholder,rows:'5',style:{fontSize:'13px'}});
+  var err=h('div',{style:{fontSize:'12px',color:'#ff4566',marginTop:'6px',minHeight:'18px'}});
+  var btn=h('button',{
+    style:{marginTop:'10px',width:'100%',padding:'14px',borderRadius:'12px',border:'none',background:'linear-gradient(135deg,#0a66c2,#1da1f2)',color:'#fff',fontSize:'14px',fontWeight:'800',display:'none',boxShadow:'0 4px 20px rgba(29,161,242,0.3)'},
+    onclick:function(){
+      try{
+        var m=ta.value.match(/\{[\s\S]*\}/);
+        if(!m){err.textContent='JSONが見つかりません。もう一度コピーしてみてください。';return;}
+        onSave(JSON.parse(m[0]));
+      }catch(e){err.textContent='形式が正しくありません。';}
+    }
+  },'✓ 保存する');
+  ta.addEventListener('input',function(){
+    err.textContent='';
+    btn.style.display=ta.value.match(/\{[\s\S]*\}/)?'block':'none';
+  });
+  wrap.appendChild(ta);wrap.appendChild(err);wrap.appendChild(btn);
+  return wrap;
+}
+
+function makeScoreBar(score){
+  var wrap=h('div',{style:cardStyle({marginBottom:'12px'})});
+  var top=h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'10px'}});
+  top.appendChild(h('span',{style:{fontSize:'11px',color:'#555',letterSpacing:'1px'}},'BUZZ SCORE'));
+  top.appendChild(h('span',{style:{fontSize:'30px',fontWeight:'900',color:scoreColor(score),lineHeight:'1'}},
+    String(score),h('span',{style:{fontSize:'12px',color:'#444',marginLeft:'2px'}},'pt')));
+  wrap.appendChild(top);
+  var track=h('div',{style:{height:'6px',background:'rgba(255,255,255,0.06)',borderRadius:'3px',overflow:'hidden'}});
+  var fill=h('div',{style:{height:'100%',width:'0%',background:scoreGrad(score),borderRadius:'3px',transition:'width 1s cubic-bezier(0.16,1,0.3,1)'}});
+  track.appendChild(fill);wrap.appendChild(track);
+  setTimeout(function(){fill.style.width=score+'%'},80);
+  return wrap;
+}
+
+function makeAnalyzePrompt(f){
+  return '【Xバズ分析依頼】\nカテゴリ: '+f.category+'\nいいね: '+(f.likes||'不明')+' / RT: '+(f.retweets||'不明')+' / リプライ: '+(f.replies||'不明')+' / インプレッション: '+(f.impressions||'不明')+'\n---投稿内容---\n'+f.content+(f.url?'\nURL: '+f.url:'')+(f.notes?'\nメモ: '+f.notes:'')+'\n---\n以下のJSON形式のみで分析してください（コードブロック不要）:\n{"score":85,"reasons":["理由1","理由2","理由3"],"tags":["タグ1","タグ2"],"engagementRate":"エンゲージメント率の評価","tips":"次の投稿へのアドバイス"}';
+}
+
+function makeGeneratePrompt(f){
+  var past=state.posts.slice(0,8).filter(function(p){return p.analysis});
+  var ctx=past.length>0?'\n【参考：過去のバズ投稿パターン】\n'+past.map(function(p){return '・スコア'+p.analysis.score+'pt: '+p.content.slice(0,80)+'...'}).join('\n'):'';
+  return '【X投稿生成依頼】\nカテゴリ: '+f.category+'\nテーマ: '+f.theme+ctx+'\n---\nXでバズりやすい投稿を作成してください。\n以下のJSON形式のみで返してください（コードブロック不要）:\n{"draft":"投稿本文（改行は\\nで表現）","hashtags":["#タグ1","#タグ2"],"hook":"冒頭フックの解説","tips":"バズりやすい理由"}';
+}
+
+function makeInsightPrompt(){
+  var data=state.posts.slice(0,20).map(function(p){return{likes:p.likes,retweets:p.retweets,impressions:p.impressions,category:p.category,score:p.analysis&&p.analysis.score,tags:p.analysis&&p.analysis.tags,reasons:p.analysis&&p.analysis.reasons&&p.analysis.reasons.slice(0,2),content:p.content.slice(0,60)}});
+  return '【Xバズインサイト分析依頼】\n'+data.length+'件のバズ投稿データを総合分析してください:\n'+JSON.stringify(data,null,1)+'\n---\n以下のJSON形式のみで返してください（コードブロック不要）:\n{"patterns":["パターン1","パターン2","パターン3"],"bestPostType":"最もバズりやすい投稿タイプ","bestTime":"最適な投稿時間帯","topTags":["タグ1","タグ2"],"contentTips":["コツ1","コツ2","コツ3"],"warning":"やってはいけないこと"}';
+}
+
+// ── Analyze Tab ───────────────────────────────────────────
+function renderAnalyze(){
+  var wrap=h('div',{style:{padding:'0 16px 100px'}});
+  var f={category:'占い・スピリチュアル',content:'',url:'',likes:'',retweets:'',replies:'',impressions:'',notes:''};
+
+  var catSel=h('select',{});
+  CATEGORIES.forEach(function(c){var o=h('option',{value:c},c);if(c===f.category)o.setAttribute('selected','');catSel.appendChild(o);});
+  catSel.addEventListener('change',function(e){f.category=e.target.value});
+  wrap.appendChild(fld('カテゴリ',catSel));
+
+  var urlInp=h('input',{type:'url',placeholder:'https://x.com/...'});
+  urlInp.addEventListener('input',function(e){f.url=e.target.value});
+  wrap.appendChild(fld('投稿URL（任意・参照用）',urlInp));
+
+  var grid=h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'}});
+  [['likes','❤️ いいね'],['retweets','🔁 RT'],['replies','💬 リプライ'],['impressions','👁 インプレッション']].forEach(function(item){
+    var inp=h('input',{type:'number',placeholder:item[1]});
+    inp.addEventListener('input',function(e){f[item[0]]=e.target.value});
+    grid.appendChild(inp);
+  });
+  wrap.appendChild(fld('エンゲージメント（任意）',grid));
+
+  var contentTa=h('textarea',{placeholder:'バズった投稿のテキストを貼り付け...',rows:'6'});
+  contentTa.addEventListener('input',function(e){f.content=e.target.value});
+  wrap.appendChild(fld('投稿内容 *',contentTa));
+
+  var notesInp=h('input',{type:'text',placeholder:'気になった点、インプ数など...'});
+  notesInp.addEventListener('input',function(e){f.notes=e.target.value});
+  wrap.appendChild(fld('メモ（任意）',notesInp));
+
+  var stepArea=h('div',{});
+  wrap.appendChild(h('button',{
+    style:{width:'100%',padding:'16px',borderRadius:'14px',border:'none',background:'linear-gradient(135deg,#0a66c2,#1da1f2)',color:'#fff',fontSize:'15px',fontWeight:'800',boxShadow:'0 4px 24px rgba(29,161,242,0.3)'},
+    onclick:function(){
+      if(!f.content.trim())return;
+      var prompt=makeAnalyzePrompt(f);
+      stepArea.innerHTML='';stepArea.className='fade';
+
+      var s1=h('div',{style:cardStyle({borderColor:'rgba(29,161,242,0.3)',marginTop:'20px'})});
+      s1.appendChild(h('div',{style:{fontSize:'12px',color:'#1da1f2',fontWeight:'700',marginBottom:'10px'}},'STEP 1 — プロンプトをコピーしてチャットに貼り付け'));
+      s1.appendChild(h('div',{style:{fontSize:'12px',color:'#888',lineHeight:'1.7',whiteSpace:'pre-wrap',background:'rgba(0,0,0,0.3)',borderRadius:'8px',padding:'12px',maxHeight:'150px',overflowY:'auto'}},prompt));
+      s1.appendChild(makeCopyBtn(prompt));
+      stepArea.appendChild(s1);
+
+      var s2=h('div',{style:cardStyle({borderColor:'rgba(29,161,242,0.15)'})});
+      s2.appendChild(h('div',{style:{fontSize:'12px',color:'#5bb8f5',fontWeight:'700',marginBottom:'8px'}},'STEP 2 — Claudeの返答をここに貼り付けて保存'));
+      s2.appendChild(makePasteArea('{"score":85,"reasons":[...],...}',function(parsed){
+        var post={id:Date.now(),category:f.category,content:f.content,url:f.url,likes:f.likes,retweets:f.retweets,replies:f.replies,impressions:f.impressions,notes:f.notes,analysis:parsed,savedAt:new Date().toISOString()};
+        state.posts=[post].concat(state.posts);
+        savePosts(state.posts);
+        stepArea.innerHTML='';
+        var ok=h('div',{style:{background:'rgba(29,161,242,0.08)',border:'1px solid rgba(29,161,242,0.3)',borderRadius:'16px',padding:'20px',marginTop:'16px',textAlign:'center'}});
+        ok.appendChild(h('div',{style:{fontSize:'24px',marginBottom:'6px'}},'✓'));
+        ok.appendChild(h('div',{style:{fontSize:'15px',color:'#1da1f2',fontWeight:'800'}},'保存しました！'));
+        ok.appendChild(h('div',{style:{fontSize:'12px',color:'#555',marginTop:'4px'}},state.posts.length+'件目のデータ'));
+        stepArea.appendChild(ok);
+        var cnt=document.querySelector('#postCount');
+        if(cnt)cnt.textContent=state.posts.length+'件のデータ蓄積済み';
+      }));
+      stepArea.appendChild(s2);
+    }
+  },'◈ 分析プロンプトを生成'));
+  wrap.appendChild(stepArea);
+  return wrap;
+}
+
+// ── Library Tab ───────────────────────────────────────────
+function renderLibrary(){
+  var wrap=h('div',{style:{padding:'0 16px 100px'}});
+
+  if(state.posts.length===0){
+    wrap.appendChild(h('div',{style:{textAlign:'center',padding:'80px 20px'}},
+      h('div',{style:{fontSize:'48px',marginBottom:'12px',opacity:'0.3'}},'✕'),
+      h('div',{style:{fontSize:'14px',color:'#555'}},'まだデータがありません'),
+      h('div',{style:{fontSize:'12px',marginTop:'6px',color:'#333'}},'「分析」タブから投稿を追加してください')
+    ));
+    return wrap;
+  }
+
+  var withScore=state.posts.filter(function(p){return p.analysis&&p.analysis.score});
+  var avgScore=withScore.length?Math.round(withScore.reduce(function(a,p){return a+p.analysis.score},0)/withScore.length):0;
+  var topPost=state.posts.reduce(function(a,p){return(!a||((p.analysis&&p.analysis.score||0)>(a.analysis&&a.analysis.score||0)))?p:a},null);
+
+  var statsRow=h('div',{style:{display:'flex',gap:'8px',marginBottom:'16px'}});
+  [{l:'蓄積数',v:state.posts.length+'件'},{l:'平均スコア',v:avgScore+'pt'},{l:'最高スコア',v:((topPost&&topPost.analysis&&topPost.analysis.score)||'-')+'pt'}].forEach(function(item){
+    var c=h('div',{style:Object.assign(cardStyle({flex:'1',textAlign:'center',marginBottom:'0',padding:'12px 8px'}))});
+    c.appendChild(h('div',{style:{fontSize:'10px',color:'#555',marginBottom:'4px'}},item.l));
+    c.appendChild(h('div',{style:{fontSize:'16px',fontWeight:'800',color:'#1da1f2'}},item.v));
+    statsRow.appendChild(c);
+  });
+  wrap.appendChild(statsRow);
+
+  var overlay=h('div',{
+    style:{position:'fixed',inset:'0',zIndex:'100',background:'rgba(0,0,0,0.88)',backdropFilter:'blur(10px)',display:'none',alignItems:'flex-end',justifyContent:'center'},
+    onclick:function(){overlay.style.display='none'}
+  });
+  var modal=h('div',{
+    style:{width:'100%',maxWidth:'480px',background:'#111118',borderRadius:'20px 20px 0 0',padding:'24px',maxHeight:'85vh',overflowY:'auto'},
+    onclick:function(e){e.stopPropagation()}
+  });
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  state.posts.forEach(function(p){
+    var card=h('button',{
+      style:Object.assign(cardStyle({cursor:'pointer',marginBottom:'10px',borderLeft:'3px solid #1da1f2',width:'100%',textAlign:'left',transition:'all 0.15s'})),
+      onclick:function(){showDetail(p,overlay,modal)}
+    });
+    var top=h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px'}});
+    top.appendChild(h('span',{style:{fontSize:'11px',color:'#555'}},p.category));
+    if(p.analysis&&p.analysis.score!=null)top.appendChild(h('span',{style:{fontSize:'13px',color:scoreColor(p.analysis.score),fontWeight:'800'}},p.analysis.score+'pt'));
+    card.appendChild(top);
+    card.appendChild(h('div',{style:{fontSize:'13px',color:'#ccc',lineHeight:'1.5',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:'2',WebkitBoxOrient:'vertical'}},p.content));
+    var metrics=h('div',{style:{display:'flex',gap:'10px',marginTop:'8px'}});
+    [['❤️',p.likes],['🔁',p.retweets],['💬',p.replies],['👁',p.impressions]].filter(function(x){return x[1]}).forEach(function(x){
+      metrics.appendChild(h('span',{style:{fontSize:'11px',color:'#555'}},x[0]+' '+Number(x[1]).toLocaleString()));
+    });
+    if(metrics.children.length)card.appendChild(metrics);
+    wrap.appendChild(card);
+  });
+
+  return wrap;
+}
+
+function showDetail(p,overlay,modal){
+  modal.innerHTML='';
+  var head=h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'14px'}});
+  head.appendChild(h('span',{style:{fontSize:'11px',color:'#555'}},p.category+(p.savedAt?' · '+new Date(p.savedAt).toLocaleDateString('ja-JP'):'')));
+  head.appendChild(h('button',{
+    style:{background:'rgba(255,70,100,0.1)',border:'1px solid rgba(255,70,100,0.2)',color:'#ff4566',borderRadius:'8px',padding:'5px 14px',fontSize:'12px'},
+    onclick:function(){
+      state.posts=state.posts.filter(function(x){return x.id!==p.id});
+      savePosts(state.posts);overlay.style.display='none';render();
+    }
+  },'削除'));
+  modal.appendChild(head);
+  modal.appendChild(h('div',{style:{fontSize:'14px',color:'#e0e0f0',lineHeight:'1.8',whiteSpace:'pre-wrap',marginBottom:'14px',background:'rgba(255,255,255,0.03)',borderRadius:'10px',padding:'14px'}},p.content));
+  if(p.url){modal.appendChild(h('a',{href:p.url,target:'_blank',style:{display:'block',fontSize:'12px',color:'#1da1f2',marginBottom:'12px',wordBreak:'break-all'}},p.url));}
+  var metrics=h('div',{style:{display:'flex',flexWrap:'wrap',gap:'8px',marginBottom:'14px'}});
+  [['❤️ いいね',p.likes],['🔁 RT',p.retweets],['💬 リプ',p.replies],['👁 インプ',p.impressions]].filter(function(x){return x[1]}).forEach(function(x){
+    metrics.appendChild(h('div',{style:{fontSize:'12px',color:'#888',background:'rgba(255,255,255,0.05)',borderRadius:'8px',padding:'6px 12px'}},x[0]+': '+Number(x[1]).toLocaleString()));
+  });
+  if(metrics.children.length)modal.appendChild(metrics);
+  if(p.analysis){
+    modal.appendChild(makeScoreBar(p.analysis.score));
+    if(p.analysis.engagementRate){
+      var er=h('div',{style:cardStyle({marginBottom:'12px',borderColor:'rgba(29,161,242,0.2)'})});
+      er.appendChild(lbl('エンゲージメント評価'));er.appendChild(h('div',{style:{fontSize:'13px',color:'#1da1f2',lineHeight:'1.6'}},p.analysis.engagementRate));
+      modal.appendChild(er);
+    }
+    var rc=h('div',{style:cardStyle()});
+    rc.appendChild(lbl('バズった理由'));
+    (p.analysis.reasons||[]).forEach(function(r){rc.appendChild(h('div',{style:{fontSize:'13px',color:'#e0e0f0',padding:'9px 12px',background:'rgba(29,161,242,0.08)',borderRadius:'8px',marginBottom:'6px',lineHeight:'1.6',borderLeft:'3px solid rgba(29,161,242,0.4)'}},r));});
+    if(p.analysis.tags&&p.analysis.tags.length){
+      var tr=h('div',{style:{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'10px'}});
+      p.analysis.tags.forEach(function(t){tr.appendChild(h('span',{style:{fontSize:'11px',padding:'3px 10px',borderRadius:'20px',background:'rgba(29,161,242,0.1)',color:'#1da1f2',border:'1px solid rgba(29,161,242,0.2)'}},t));});
+      rc.appendChild(tr);
+    }
+    modal.appendChild(rc);
+    var ac=h('div',{style:cardStyle({borderColor:'rgba(29,161,242,0.15)'})});
+    ac.appendChild(lbl('次の投稿へのアドバイス'));ac.appendChild(h('div',{style:{fontSize:'13px',color:'#5bb8f5',lineHeight:'1.7'}},p.analysis.tips));
+    modal.appendChild(ac);
+  }
+  overlay.style.display='flex';
+}
+
+// ── Generate Tab ──────────────────────────────────────────
+function renderGenerate(){
+  var wrap=h('div',{style:{padding:'0 16px 100px'}});
+  var f={theme:'',category:'占い・スピリチュアル'};
+  var stepArea=h('div',{});
+
+  var catSel=h('select',{});
+  CATEGORIES.forEach(function(c){var o=h('option',{value:c},c);if(c===f.category)o.setAttribute('selected','');catSel.appendChild(o);});
+  catSel.addEventListener('change',function(e){f.category=e.target.value});
+  wrap.appendChild(fld('カテゴリ',catSel));
+
+  var themeInp=h('input',{type:'text',placeholder:'例: 水星逆行の影響、今週の牡羊座...'});
+  themeInp.addEventListener('input',function(e){f.theme=e.target.value});
+  wrap.appendChild(fld('テーマ・キーワード *',themeInp));
+
+  if(state.posts.length>0){
+    var hint=h('div',{style:{fontSize:'12px',color:'#444',marginBottom:'16px',padding:'10px 14px',background:'rgba(29,161,242,0.06)',borderRadius:'8px',borderLeft:'3px solid rgba(29,161,242,0.2)'}},
+      '蓄積した'+state.posts.length+'件のバズデータを参考に生成します');
+    wrap.appendChild(hint);
+  }
+
+  wrap.appendChild(h('button',{
+    style:{width:'100%',padding:'16px',borderRadius:'14px',border:'none',background:'linear-gradient(135deg,#0a66c2,#1da1f2)',color:'#fff',fontSize:'15px',fontWeight:'800',boxShadow:'0 4px 24px rgba(29,161,242,0.3)'},
+    onclick:function(){
+      if(!f.theme.trim())return;
+      var prompt=makeGeneratePrompt(f);
+      stepArea.innerHTML='';stepArea.className='fade';
+
+      var s1=h('div',{style:cardStyle({borderColor:'rgba(29,161,242,0.3)',marginTop:'20px'})});
+      s1.appendChild(h('div',{style:{fontSize:'12px',color:'#1da1f2',fontWeight:'700',marginBottom:'10px'}},'STEP 1 — コピーしてチャットに貼り付け'));
+      s1.appendChild(h('div',{style:{fontSize:'12px',color:'#888',lineHeight:'1.7',whiteSpace:'pre-wrap',background:'rgba(0,0,0,0.3)',borderRadius:'8px',padding:'12px',maxHeight:'140px',overflowY:'auto'}},prompt));
+      s1.appendChild(makeCopyBtn(prompt));
+      stepArea.appendChild(s1);
+
+      var s2=h('div',{style:cardStyle({borderColor:'rgba(29,161,242,0.15)'})});
+      s2.appendChild(h('div',{style:{fontSize:'12px',color:'#5bb8f5',fontWeight:'700',marginBottom:'8px'}},'STEP 2 — 返答を貼り付け'));
+      s2.appendChild(makePasteArea('{"draft":"投稿本文...","hashtags":[...],...}',function(parsed){
+        stepArea.innerHTML='';stepArea.className='fade';
+        var rc=h('div',{style:cardStyle()});
+        rc.appendChild(lbl('生成された投稿'));
+        rc.appendChild(h('div',{style:{fontSize:'14px',color:'#f0f0f5',lineHeight:'1.9',whiteSpace:'pre-wrap',background:'rgba(29,161,242,0.05)',borderRadius:'10px',padding:'14px',borderLeft:'3px solid rgba(29,161,242,0.3)'}},parsed.draft||''));
+        if(parsed.hashtags&&parsed.hashtags.length){
+          var tr=h('div',{style:{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'12px'}});
+          parsed.hashtags.forEach(function(t){tr.appendChild(h('span',{style:{fontSize:'12px',padding:'4px 10px',borderRadius:'20px',background:'rgba(29,161,242,0.1)',color:'#1da1f2',border:'1px solid rgba(29,161,242,0.2)'}},t));});
+          rc.appendChild(tr);
+        }
+        var fullText=(parsed.draft||'')+'\n\n'+(parsed.hashtags||[]).join(' ');
+        var cpBtn=h('button',{
+          style:{marginTop:'14px',width:'100%',padding:'12px',borderRadius:'10px',border:'1px solid rgba(29,161,242,0.2)',background:'rgba(29,161,242,0.08)',color:'#1da1f2',fontSize:'13px',fontWeight:'700'},
+          onclick:function(){copyText(fullText);cpBtn.textContent='✓ コピーしました！';}
+        },'📋 投稿をコピー（ハッシュタグ込み）');
+        rc.appendChild(cpBtn);
+        stepArea.appendChild(rc);
+        if(parsed.hook||parsed.tips){
+          var ic=h('div',{style:cardStyle({borderColor:'rgba(29,161,242,0.1)'})});
+          if(parsed.hook){ic.appendChild(lbl('冒頭フックのポイント'));ic.appendChild(h('div',{style:{fontSize:'13px',color:'#f77737',lineHeight:'1.6',marginBottom:'12px'}},parsed.hook));}
+          if(parsed.tips){ic.appendChild(lbl('バズりやすい理由'));ic.appendChild(h('div',{style:{fontSize:'13px',color:'#5bb8f5',lineHeight:'1.6'}},parsed.tips));}
+          stepArea.appendChild(ic);
+        }
+        stepArea.appendChild(h('button',{
+          style:{width:'100%',padding:'12px',borderRadius:'12px',border:'1px solid rgba(255,255,255,0.07)',background:'transparent',color:'#444',fontSize:'13px',marginTop:'4px'},
+          onclick:function(){stepArea.innerHTML='';themeInp.value='';f.theme='';}
+        },'+ もう一度生成する'));
+      }));
+      stepArea.appendChild(s2);
+    }
+  },'✦ 投稿生成プロンプトを作成'));
+  wrap.appendChild(stepArea);
+  return wrap;
+}
+
+// ── Insight Tab ───────────────────────────────────────────
+function renderInsight(){
+  var wrap=h('div',{style:{padding:'0 16px 100px'}});
+  var enough=state.posts.length>=3;
+  var stepArea=h('div',{});
+
+  var ic=h('div',{style:cardStyle({textAlign:'center',marginBottom:'16px'})});
+  ic.appendChild(h('div',{style:{fontSize:'32px',marginBottom:'8px'}},'◉'));
+  var desc=h('div',{style:{fontSize:'14px',color:'#ccc',lineHeight:'1.9'}});
+  desc.innerHTML='蓄積した<span style="color:#1da1f2;font-weight:800"> '+state.posts.length+'件 </span>のXデータから<br>バズのパターンを抽出します';
+  ic.appendChild(desc);
+  if(!enough)ic.appendChild(h('div',{style:{fontSize:'12px',color:'#444',marginTop:'8px'}},'※ 3件以上のデータが必要です'));
+  wrap.appendChild(ic);
+
+  wrap.appendChild(h('button',{
+    style:{width:'100%',padding:'16px',borderRadius:'14px',border:'none',
+      background:enough?'linear-gradient(135deg,#0a66c2,#1da1f2)':'rgba(255,255,255,0.06)',
+      color:enough?'#fff':'#333',fontSize:'15px',fontWeight:'800',
+      boxShadow:enough?'0 4px 24px rgba(29,161,242,0.3)':'none'},
+    onclick:function(){
+      if(!enough)return;
+      var prompt=makeInsightPrompt();
+      stepArea.innerHTML='';stepArea.className='fade';
+
+      var s1=h('div',{style:cardStyle({borderColor:'rgba(29,161,242,0.3)',marginTop:'20px'})});
+      s1.appendChild(h('div',{style:{fontSize:'12px',color:'#1da1f2',fontWeight:'700',marginBottom:'10px'}},'STEP 1 — コピーしてチャットに貼り付け'));
+      s1.appendChild(h('div',{style:{fontSize:'11px',color:'#777',lineHeight:'1.6',background:'rgba(0,0,0,0.3)',borderRadius:'8px',padding:'12px',maxHeight:'120px',overflowY:'auto',whiteSpace:'pre-wrap'}},prompt));
+      s1.appendChild(makeCopyBtn(prompt));
+      stepArea.appendChild(s1);
+
+      var s2=h('div',{style:cardStyle({borderColor:'rgba(29,161,242,0.15)'})});
+      s2.appendChild(h('div',{style:{fontSize:'12px',color:'#5bb8f5',fontWeight:'700',marginBottom:'8px'}},'STEP 2 — 返答を貼り付け'));
+      s2.appendChild(makePasteArea('{"patterns":[...],...}',function(parsed){
+        stepArea.innerHTML='';stepArea.className='fade';
+        if(parsed.patterns){
+          var pc=h('div',{style:cardStyle()});pc.appendChild(lbl('バズのパターン'));
+          parsed.patterns.forEach(function(pt,i){
+            var row=h('div',{style:{display:'flex',gap:'10px',alignItems:'flex-start',padding:'10px 0',borderBottom:i<parsed.patterns.length-1?'1px solid rgba(255,255,255,0.04)':'none'}});
+            row.appendChild(h('span',{style:{color:'#1da1f2',flexShrink:'0',fontSize:'16px',marginTop:'1px'}},'◈'));
+            row.appendChild(h('span',{style:{fontSize:'13px',color:'#e0e0f0',lineHeight:'1.6'}},pt));
+            pc.appendChild(row);
+          });
+          stepArea.appendChild(pc);
+        }
+        var r2=h('div',{style:{display:'flex',gap:'8px'}});
+        if(parsed.bestPostType){var c1=h('div',{style:Object.assign(cardStyle({flex:'1',marginBottom:'0',padding:'12px'}))}); c1.appendChild(h('div',{style:{fontSize:'10px',color:'#555',marginBottom:'5px'}},'最もバズる投稿タイプ'));c1.appendChild(h('div',{style:{fontSize:'12px',color:'#1da1f2',fontWeight:'700',lineHeight:'1.4'}},parsed.bestPostType));r2.appendChild(c1);}
+        if(parsed.bestTime){var c2=h('div',{style:Object.assign(cardStyle({flex:'1',marginBottom:'0',padding:'12px'}))}); c2.appendChild(h('div',{style:{fontSize:'10px',color:'#555',marginBottom:'5px'}},'最適な投稿時間帯'));c2.appendChild(h('div',{style:{fontSize:'12px',color:'#f77737',fontWeight:'700',lineHeight:'1.4'}},parsed.bestTime));r2.appendChild(c2);}
+        if(r2.children.length){stepArea.appendChild(r2);stepArea.appendChild(h('div',{style:{marginBottom:'8px'}}));}
+        if(parsed.topTags&&parsed.topTags.length){
+          var tc=h('div',{style:cardStyle()});tc.appendChild(lbl('よく使われているタグ'));
+          var tr=h('div',{style:{display:'flex',flexWrap:'wrap',gap:'6px'}});
+          parsed.topTags.forEach(function(t){tr.appendChild(h('span',{style:{fontSize:'12px',padding:'4px 12px',borderRadius:'20px',background:'rgba(29,161,242,0.1)',color:'#1da1f2',border:'1px solid rgba(29,161,242,0.2)'}},t));});
+          tc.appendChild(tr);stepArea.appendChild(tc);
+        }
+        if(parsed.contentTips){
+          var cc=h('div',{style:cardStyle()});cc.appendChild(lbl('コンテンツのコツ'));
+          parsed.contentTips.forEach(function(t){cc.appendChild(h('div',{style:{fontSize:'13px',color:'#ccc',padding:'8px 12px',background:'rgba(29,161,242,0.06)',borderRadius:'8px',marginBottom:'6px',lineHeight:'1.6',borderLeft:'2px solid rgba(29,161,242,0.3)'}},'✓ '+t));});
+          stepArea.appendChild(cc);
+        }
+        if(parsed.warning){
+          var wc=h('div',{style:cardStyle({borderColor:'rgba(255,70,100,0.2)',background:'rgba(255,70,100,0.04)'})});
+          wc.appendChild(lbl('⚠ やってはいけないこと'));wc.appendChild(h('div',{style:{fontSize:'13px',color:'#ffaaaa',lineHeight:'1.7'}},parsed.warning));
+          stepArea.appendChild(wc);
+        }
+        stepArea.appendChild(h('button',{
+          style:{width:'100%',padding:'12px',borderRadius:'12px',border:'1px solid rgba(255,255,255,0.07)',background:'transparent',color:'#444',fontSize:'13px',marginTop:'4px'},
+          onclick:function(){stepArea.innerHTML='';}
+        },'↺ 再分析する'));
+      }));
+      stepArea.appendChild(s2);
+    }
+  },enough?'◉ インサイトを取得する':'あと'+(3-state.posts.length)+'件のデータが必要'));
+  wrap.appendChild(stepArea);
+  return wrap;
+}
+
+// ── Main render ───────────────────────────────────────────
+function render(){
+  var app=document.getElementById('app');
+  app.innerHTML='';
+
+  app.appendChild(h('div',{style:{position:'fixed',inset:'0',zIndex:'0',pointerEvents:'none',background:'radial-gradient(ellipse 60% 40% at 70% 5%,rgba(29,161,242,0.09) 0%,transparent 65%),radial-gradient(ellipse 40% 30% at 20% 95%,rgba(10,102,194,0.07) 0%,transparent 65%)'}}));
+
+  var main=h('div',{style:{position:'relative',zIndex:'1'}});
+
+  var hdr=h('div',{style:{padding:'52px 24px 14px',textAlign:'center'}});
+  hdr.appendChild(h('div',{style:{display:'inline-flex',alignItems:'center',gap:'8px',background:'rgba(29,161,242,0.1)',border:'1px solid rgba(29,161,242,0.2)',borderRadius:'20px',padding:'4px 16px',marginBottom:'12px'}},
+    h('span',{style:{fontSize:'16px',fontWeight:'900',color:'#1da1f2'}},'✕'),
+    h('span',{style:{fontSize:'11px',color:'#1da1f2',letterSpacing:'2px',fontWeight:'700'}},'BUZZ ANALYZER')
+  ));
+  hdr.appendChild(h('div',{id:'postCount',style:{fontSize:'12px',color:'#444',marginTop:'2px'}},state.posts.length+'件のデータ蓄積済み'));
+  main.appendChild(hdr);
+
+  var howto=h('div',{style:{margin:'0 16px 16px',padding:'12px 16px',background:'rgba(29,161,242,0.06)',border:'1px solid rgba(29,161,242,0.15)',borderRadius:'12px'}});
+  howto.appendChild(h('div',{style:{fontSize:'11px',color:'#1da1f2',fontWeight:'700',marginBottom:'4px'}},'使い方'));
+  var ht=h('div',{style:{fontSize:'12px',color:'#666',lineHeight:'1.8'}});
+  ht.innerHTML='① 投稿を入力 → プロンプト生成<br>② コピーしてこのチャットに送信<br>③ 返答をここに貼り付けて保存';
+  howto.appendChild(ht);
+  main.appendChild(howto);
+
+  if(state.tab==='analyze')main.appendChild(renderAnalyze());
+  if(state.tab==='library')main.appendChild(renderLibrary());
+  if(state.tab==='generate')main.appendChild(renderGenerate());
+  if(state.tab==='insight')main.appendChild(renderInsight());
+  app.appendChild(main);
+
+  var TABS=[{id:'analyze',icon:'◈',label:'分析'},{id:'library',icon:'≡',label:'履歴'},{id:'generate',icon:'✦',label:'生成'},{id:'insight',icon:'◉',label:'洞察'}];
+  var nav=h('div',{style:{position:'fixed',bottom:'0',left:'50%',transform:'translateX(-50%)',width:'100%',maxWidth:'480px',background:'rgba(8,8,14,0.97)',backdropFilter:'blur(20px)',borderTop:'1px solid rgba(255,255,255,0.05)',display:'flex',padding:'8px 8px 28px',gap:'4px',zIndex:'50'}});
+  TABS.forEach(function(t){
+    var active=state.tab===t.id;
+    nav.appendChild(h('button',{
+      style:{flex:'1',padding:'10px 4px',borderRadius:'12px',border:'none',
+        background:active?'rgba(29,161,242,0.15)':'transparent',
+        color:active?'#1da1f2':'#444',
+        fontSize:'11px',fontWeight:active?'700':'400',transition:'all 0.2s',
+        display:'flex',flexDirection:'column',alignItems:'center',gap:'3px'},
+      onclick:function(){state.tab=t.id;render();}
+    },h('span',{style:{fontSize:'17px'}},t.icon),h('span',{},t.label)));
+  });
+  app.appendChild(nav);
+}
+
+render();
+</script>
+</body>
+</html>
